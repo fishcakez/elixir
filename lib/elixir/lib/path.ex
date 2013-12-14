@@ -14,8 +14,7 @@ defmodule Path do
 
   alias :filename, as: FN
 
-  @type t :: char_list | atom | binary
-  @type r :: char_list | binary
+  @type t :: char_list | atom | String.t
 
   @doc """
   Converts the given path to an absolute one. Unlike
@@ -37,6 +36,7 @@ defmodule Path do
       "D:/usr/local/../x"
 
   """
+  @spec absname(Path.t) :: Path.t
   def absname(path) do
     FN.absname(path, get_cwd(path))
   end
@@ -57,6 +57,7 @@ defmodule Path do
       "bar/../x"
 
   """
+  @spec absname(Path.t) :: Path.t
   def absname(path, relative_to) do
     FN.absname(path, relative_to)
   end
@@ -71,6 +72,7 @@ defmodule Path do
       "/foo/bar"
 
   """
+  @spec expand(Path.t) :: Path.t
   def expand(path) do
     normalize FN.absname(expand_home(path), get_cwd(path))
   end
@@ -97,6 +99,7 @@ defmodule Path do
       "/foo/bar"
 
   """
+  @spec expand(Path.t, Path.t) :: Path.t
   def expand(path, relative_to) do
     normalize FN.absname(FN.absname(expand_home(path), expand_home(relative_to)), get_cwd(path))
   end
@@ -119,6 +122,7 @@ defmodule Path do
       Path.type("/bar/foo.ex")      #=> :volumerelative
 
   """
+  @spec type(Path.t) :: :absolute | :relative
   def type(name) when is_list(name) or is_binary(name) do
     case :os.type() do
       { :win32, _ } -> win32_pathtype(name)
@@ -143,6 +147,7 @@ defmodule Path do
       Path.relative("/bar/foo.ex")      #=> "bar/foo.ex"
 
   """
+  @spec relative(Path.t) :: Path.t
   def relative(name) do
     case :os.type() do
       { :win32, _ } -> win32_pathtype(name)
@@ -211,6 +216,7 @@ defmodule Path do
       "/usr/local/foo"
 
   """
+  @spec relative_to(Path.t, Path.t) :: Path.t
   def relative_to(path, from) when is_list(path) and is_binary(from) do
     path = filename_string_to_binary(path)
     relative_to(FN.split(path), FN.split(from), path)
@@ -241,6 +247,7 @@ defmodule Path do
   directory. If, for some reason, the current working directory
   cannot be retrieved, returns the full path.
   """
+  @spec relative_to_cwd(Path.t) :: Path.t
   def relative_to_cwd(path) do
     case :file.get_cwd do
       { :ok, base } -> relative_to(path, base)
@@ -264,6 +271,7 @@ defmodule Path do
       ""
 
   """
+  @spec basename(Path.t) :: Path.t
   def basename(path) do
     FN.basename(path)
   end
@@ -283,6 +291,7 @@ defmodule Path do
       "bar.old"
 
   """
+  @spec basename(Path.t, Path.t) :: Path.t
   def basename(path, extension) do
     FN.basename(path, extension)
   end
@@ -298,6 +307,7 @@ defmodule Path do
       #=> "/foo/bar"
 
   """
+  @spec dirname(Path.t) :: Path.t
   def dirname(path) do
     FN.dirname(path)
   end
@@ -313,6 +323,7 @@ defmodule Path do
       ""
 
   """
+  @spec extname(Path.t) :: Path.t
   def extname(path) do
     FN.extension(path)
   end
@@ -328,6 +339,7 @@ defmodule Path do
       "/foo/bar"
 
   """
+  @spec rootname(Path.t) :: Path.t
   def rootname(path) do
     FN.rootname(path)
   end
@@ -344,6 +356,7 @@ defmodule Path do
       "/foo/bar.erl"
 
   """
+  @spec rootname(Path.t, Path.t) :: Path.t
   def rootname(path, extension) do
     FN.rootname(path, extension)
   end
@@ -362,6 +375,7 @@ defmodule Path do
       "/foo/bar"
 
   """
+  @spec join([Path.t]) :: Path.t
   def join([name1, name2|rest]), do:
     join([join(name1, name2)|rest])
   def join([name]) when is_list(name), do:
@@ -378,6 +392,7 @@ defmodule Path do
       "foo/bar"
 
   """
+  @spec join(Path.t, Path.t) :: Path.t
   def join(left, right) when is_binary(left) and is_binary(right), do:
     do_join(left, Path.relative(right), [], major_os_type())
 
@@ -443,6 +458,7 @@ defmodule Path do
 
   """
   # Work around a bug in Erlang on UNIX
+  @spec split(Path.t) :: [Path.t]
   def split(""), do: []
 
   def split(path) do
@@ -482,6 +498,7 @@ defmodule Path do
       Path.wildcard("projects/*/ebin/**/*.{beam,app}")
 
   """
+  @spec wildcard(char_list | binary) :: [Path.t]
   def wildcard(glob) when is_binary(glob) do
     paths = :filelib.wildcard binary_to_filename_string(glob)
     encoding = :file.native_name_encoding()
