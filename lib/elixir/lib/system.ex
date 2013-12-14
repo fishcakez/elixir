@@ -14,15 +14,88 @@ defmodule System do
   with the VM or the host system.
   """
 
+  @doc """
+  Returns the VMs configured file name encoding.
+
+  This can be configured with the `--erl` VM flags `+fnl`, `+fnu`, `+fnuw`,
+  `+fnue` and `+fnui`. `+fnl` will translate file names to latin-1. The other
+  flags will translate file names as unicode, which is probably the prefered
+  choice. `+fnuw` (and `+fnu`) will send a warning to the error logger and skip
+  files containing incorrectly encoded names when listing a directory. `+fnui`
+  will silently ignore incorrectily encoded names. `+fnue` will return an error
+  when an incorrectly encoded file or directory name is encountered.
+
+  The default value for the encoding is OS dependent. Mac and Windows will
+  default to `:utf8` as their filesystems enforce unicode file names. Linux and
+  other transparent filesystems will default to `:latin1`.
+  """
+  @spec native_filename_encoding() :: :utf8 | :latin1
+  defdelegate native_filename_encoding(), to: :file, as: :native_name_encoding
+
+  @doc false
+  @spec path_to_filename(term) ::
+    { :ok, Path.t } | { :error, :no_translation | :badarg }
+  @spec path_to_filename(term, :format | :noformat) ::
+    { :ok, Path.t, ( (Path.t) -> Path.t ) } | { :ok, Path.t } | { :error, :no_translation | :badarg }
+  def path_to_filename(path, mode // :noformat)
+
+  def path_to_filename(path, mode) when is_binary(path) do
+    case :file.native_name_encoding() do
+      :utf8 when mode == :noformat ->
+        { :ok, path }
+      :utf8 when mode == :format ->
+        { :ok, path, &filename_to_binary/1 }
+      :latin1 ->
+        case String.to_char_list(path) do
+          { :ok, _path } = result when mode == :noformat ->
+            result
+          { :ok, path } when mode == :format ->
+            { :ok, path, &filename_to_binary/1 }
+          { :error, _, _ } ->
+            { :error, :no_translation }
+          { :incomplete, _, _ } ->
+            { :error, :no_translation }
+        end
+    end
+  end
+
+  def path_to_filename(path, :noformat) when is_list(path) or is_atom(path) do
+    { :ok, path }
+  end
+
+  def path_to_filename(path, :format) when is_list(path) or is_atom(path) do
+    { :ok, path, &(&1) }
+  end
+
+  def path_to_filename(_, _) do
+    { :error, :badarg }
+  end
+
+  defp filename_to_binary(path) when is_binary(path) do
+    path
+  end
+
+  defp filename_to_binary(path) when is_list(path) do
+    String.from_char_list!(path)
+  end
+
+  defp filename_to_binary(path) when is_atom(path) do
+    :erlang.atom_to_binary(path, :utf8)
+  end
+
   defp strip_re(iodata, pattern) do
     :re.replace(iodata, pattern, "", [return: :binary])
   end
 
   defp read_stripped(path) do
-    case :file.read_file(path) do
-      { :ok, binary } ->
-        strip_re(binary, "^\s+|\s+$")
-      _ -> ""
+    case path_to_filename(path) do
+      { :ok, path } ->
+        case :file.read_file(path) do
+          { :ok, binary } ->
+            strip_re(binary, "^\s+|\s+$")
+           _ -> ""
+        end
+      { :error, _reason } -> ""
     end
   end
 
@@ -103,7 +176,11 @@ defmodule System do
   """
   def cwd do
     case :file.get_cwd do
-      { :ok, base } -> String.from_char_list!(base)
+      { :ok, base } ->
+        encoding = :file.native_name_encoding()
+        # To have cd'ed to this directory or to have started the node the
+        # directory must be correctly encoded so the translation won't fail.
+        :unicode.characters_to_binary(base, encoding, :utf8)
       _ -> nil
     end
   end
@@ -194,15 +271,23 @@ defmodule System do
   end
 
   defp write_tmp_dir(dir) do
-    case :file.read_file_info(dir) do
-      {:ok, info} ->
-        type_index = File.Stat.__record__(:index, :type)
-        access_index = File.Stat.__record__(:index, :access)
-        case { elem(info, type_index), elem(info, access_index) } do
-          { :directory, access } when access in [:read_write, :write] ->
-            String.from_char_list!(dir)
-          _ ->
-            nil
+    case path_to_filename(dir) do
+      { :ok, dir } ->
+        case :file.read_file_info(dir) do
+          {:ok, info} ->
+            type_index = File.Stat.__record__(:index, :type)
+            access_index = File.Stat.__record__(:index, :access)
+            case { elem(info, type_index), elem(info, access_index) } do
+              { :directory, access } when access in [:read_write, :write] ->
+                encoding = :file.native_name_encoding()
+                case :unicode.characters_to_binary(dir, encoding, :utf8) do
+                  dir when is_binary(dir) -> dir
+                  _ -> nil
+                end
+              _ ->
+                nil
+            end
+          { :error, _ } -> nil
         end
       { :error, _ } -> nil
     end

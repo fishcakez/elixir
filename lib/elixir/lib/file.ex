@@ -74,6 +74,14 @@ defmodule File do
   to react if the file does not exist. The latter should be used
   when the developer expects his software to fail in case the
   file cannot be read (i.e. it is literally an exception).
+
+  All functions in this module use the native filename encoding for
+  translating file and directory names, see
+  `System.native_filename_encoding/0`. If the native filename encoding
+  is `:latin1` only codepoints from 0 to 255 inclusive can be used.
+  If the native filename encoding is `:uft8` all unicode codepoints
+  can be used and an incorrectly utf8 encoded file or directory name
+  can be represented by a raw binary.
   """
 
   alias :file,     as: F
@@ -98,7 +106,12 @@ defmodule File do
   """
   @spec regular?(Path.t) :: boolean()
   def regular?(path) do
-    FL.is_regular(path)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        FL.is_regular(path)
+      { :error, _reason } ->
+        false
+    end
   end
 
   @doc """
@@ -106,7 +119,12 @@ defmodule File do
   """
   @spec dir?(Path.t) :: boolean()
   def dir?(path) do
-    FL.is_dir(path)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        FL.is_dir(path)
+      { :error, _reason } ->
+        false
+    end
   end
 
   @doc """
@@ -128,7 +146,12 @@ defmodule File do
   """
   @spec exists?(Path.t) :: boolean()
   def exists?(path) do
-    match?({ :ok, _ }, F.read_file_info(path))
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        match?({ :ok, _ }, F.read_file_info(path))
+      { :error, _reason } ->
+        false
+    end
   end
 
   @doc """
@@ -146,7 +169,12 @@ defmodule File do
   """
   @spec mkdir(Path.t) :: :ok | { :error, posix() | :badarg | :no_translation }
   def mkdir(path) do
-    F.make_dir(path)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.make_dir(path)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -173,7 +201,12 @@ defmodule File do
   """
   @spec mkdir_p(Path.t) :: :ok | { :error, posix | :no_translation }
   def mkdir_p(path) do
-    FL.ensure_dir(FN.join(path, "."))
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        FL.ensure_dir(FN.join(path, "."))
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -207,7 +240,12 @@ defmodule File do
   @spec read(Path.t) ::
     { :ok, binary } | { :error, posix | :badarg | :terminated | :system_limit | :no_translation }
   def read(path) do
-    F.read_file(path)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.read_file(path)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -243,10 +281,15 @@ defmodule File do
   @spec stat(Path.t, [stat_option]) ::
     { :ok, File.Stat.t } | { :error, posix | :badarg | :no_translation }
   def stat(path, opts // []) do
-    case F.read_file_info(path, opts) do
-      {:ok, fileinfo} ->
-        {:ok, set_elem(fileinfo, 0, File.Stat) }
-      error ->
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        case F.read_file_info(path, opts) do
+          {:ok, fileinfo} ->
+            {:ok, set_elem(fileinfo, 0, File.Stat) }
+          error ->
+            error
+        end
+      { :error, _reason } = error ->
         error
     end
   end
@@ -274,7 +317,12 @@ defmodule File do
   @spec write_stat(Path.t, File.Stat.t, [stat_option]) ::
     :ok | { :error, posix | :badarg | :no_translation }
   def write_stat(path, File.Stat[] = stat, opts // []) do
-    F.write_file_info(path, set_elem(stat, 0, :file_info), opts)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.write_file_info(path, set_elem(stat, 0, :file_info), opts)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -300,12 +348,17 @@ defmodule File do
   @spec touch(Path.t, datetime) ::
     :ok | { posix | :badarg | :terminated | :system_limit | :no_translation }
   def touch(path, time // :calendar.local_time) do
-    case F.change_time(path, time) do
-      { :error, :enoent } ->
-        write(path, "")
-        F.change_time(path, time)
-      other ->
-        other
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        case F.change_time(path, time) do
+          { :error, :enoent } ->
+            write(path, "")
+            F.change_time(path, time)
+          other ->
+            other
+        end
+      { :error, _reason } = error ->
+        error
     end
   end
 
@@ -354,7 +407,12 @@ defmodule File do
     { :ok, non_neg_integer } |
     { :error, posix | :badarg | :terminated | :no_translation }
   def copy(source, destination, bytes_count // :infinity) do
-    F.copy(source, destination, bytes_count)
+    case copy_targets(source, destination)  do
+      { :ok, { source, destination } } ->
+        F.copy(source, destination, bytes_count)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -405,9 +463,14 @@ defmodule File do
         destination
       end
 
-    case do_cp_file(source, output, callback, []) do
-      { :error, reason, _ } -> { :error, reason }
-      _ -> :ok
+    case cp_targets(source, output) do
+      { :ok, { source, output }, format} ->
+        case do_cp_file(source, output, callback, format, []) do
+          { :error, reason, _ } -> { :error, reason }
+           _ -> :ok
+        end
+      { :error, reason, _ } ->
+        { :error, reason }
     end
   end
 
@@ -486,9 +549,14 @@ defmodule File do
         destination
       end
 
-    case do_cp_r(source, output, callback, []) do
-      { :error, _, _ } = error -> error
-      res -> { :ok, res }
+    case cp_targets(source, output) do
+      { :ok, { source, output }, format } ->
+        case do_cp_r(source, output, callback, format, []) do
+          { :error, _, _ } = error -> error
+          res -> { :ok, res }
+        end
+      { :error, _reason, _file } = error ->
+        error
     end
   end
 
@@ -511,13 +579,13 @@ defmodule File do
 
   # src may be a file or a directory, dest is definitely
   # a directory. Returns nil unless an error is found.
-  defp do_cp_r(src, dest, callback, acc) when is_list(acc) do
+  defp do_cp_r(src, dest, callback, { _, format_dest } = format, acc) when is_list(acc) do
     case :elixir_utils.file_type(src) do
       { :ok, :regular } ->
-        do_cp_file(src, dest, callback, acc)
+        do_cp_file(src, dest, callback, format, acc)
       { :ok, :symlink } ->
         case F.read_link(src) do
-          { :ok, link } -> do_cp_link(link, src, dest, callback, acc)
+          { :ok, link } -> do_cp_link(link, src, dest, callback, format, acc)
           { :error, reason } -> { :error, reason, to_string(src) }
         end
       { :ok, :directory } ->
@@ -525,8 +593,8 @@ defmodule File do
           { :ok, files } ->
             case mkdir(dest) do
               success when success in [:ok, { :error, :eexist }] ->
-                Enum.reduce(files, [dest|acc], fn(x, acc) ->
-                  do_cp_r(FN.join(src, x), FN.join(dest, x), callback, acc)
+                Enum.reduce(files, [format_dest.(dest)|acc], fn(x, acc) ->
+                  do_cp_r(FN.join(src, x), FN.join(dest, x), callback, format, acc)
                 end)
               { :error, reason } -> { :error, reason, to_string(dest) }
             end
@@ -539,7 +607,7 @@ defmodule File do
 
   # If we reach this clause, there was an error while
   # processing a file.
-  defp do_cp_r(_, _, _, acc) do
+  defp do_cp_r(_, _, _, _, acc) do
     acc
   end
 
@@ -550,18 +618,21 @@ defmodule File do
   end
 
   # Both src and dest are files.
-  defp do_cp_file(src, dest, callback, acc) do
+  defp do_cp_file(src, dest, callback, { format_src, format_dest }, acc) do
     case copy(src, { dest, [:exclusive] }) do
       { :ok, _ } ->
         copy_file_mode!(src, dest)
-        [dest|acc]
+        [format_dest.(dest)|acc]
       { :error, :eexist } ->
-        if callback.(src, dest) do
+        # Use strings for paths passed to callback fun and for paths returned in
+        # the accumulated list
+        dest2 = format_dest.(dest)
+        if callback.(format_src.(src), dest2) do
           rm(dest)
           case copy(src, dest) do
             { :ok, _ } ->
               copy_file_mode!(src, dest)
-              [dest|acc]
+              [dest2|acc]
             { :error, reason } -> { :error, reason, to_string(src) }
           end
         else
@@ -572,15 +643,18 @@ defmodule File do
   end
 
   # Both src and dest are files.
-  defp do_cp_link(link, src, dest, callback, acc) do
+  defp do_cp_link(link, src, dest, callback, { format_src, format_dest }, acc) do
     case F.make_symlink(link, dest) do
       :ok ->
-        [dest|acc]
+        [format_dest.(dest)|acc]
       { :error, :eexist } ->
-        if callback.(src, dest) do
+        # Use strings for paths passed to callback fun and for paths returned in
+        # the accumulated list
+        dest2 = format_dest.(dest)
+        if callback.(format_src.(src), dest2) do
           rm(dest)
           case F.make_symlink(link, dest) do
-            :ok -> [dest|acc]
+            :ok -> [dest2|acc]
             { :error, reason } -> { :error, reason, to_string(src) }
           end
         else
@@ -611,7 +685,12 @@ defmodule File do
   @spec write(Path.t, iodata, [mode]) ::
     :ok | { :error, posix | :badarg | :terminated | :system_limit | :no_translation }
   def write(path, content, modes // []) do
-    F.write_file(path, content, modes)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.write_file(path, content, modes)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -620,7 +699,7 @@ defmodule File do
   @spec write!(Path.t, iodata) :: :ok
   @spec write!(Path.t, iodata, [mode]) :: :ok
   def write!(path, content, modes // []) do
-    case F.write_file(path, content, modes) do
+    case write(path, content, modes) do
       :ok -> :ok
       { :error, reason } ->
         raise File.Error, reason: reason, action: "write to file", path: to_string(path)
@@ -651,7 +730,12 @@ defmodule File do
   """
   @spec rm(Path.t) :: :ok | { :error, posix | :badarg | :no_translation }
   def rm(path) do
-    F.delete(path)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.delete(path)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -681,7 +765,12 @@ defmodule File do
   """
   @spec rmdir(Path.t) :: :ok | { :error, posix | :badarg | :no_translation }
   def rmdir(path) do
-    F.del_dir(path)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.del_dir(path)
+      { :error, _reason} = error ->
+        error
+    end
   end
 
   @doc """
@@ -717,41 +806,46 @@ defmodule File do
   @spec rm_rf(Path.t) ::
     { :ok, [Path.t] } | { :error, posix | :badarg | :no_translation, Path.t }
   def rm_rf(path) do
-    do_rm_rf(path, { :ok, [] })
+    case System.path_to_filename(path, :format) do
+      { :ok, path, format } ->
+        do_rm_rf(path, format, { :ok, [] })
+      { :error, reason } ->
+        { :error, reason, to_string(path) }
+    end
   end
 
-  defp do_rm_rf(path, { :ok, acc } = entry) do
+  defp do_rm_rf(path, format, { :ok, acc } = entry) do
     case safe_list_dir(path) do
       { :ok, files } when is_list(files) ->
         res =
           Enum.reduce files, entry, fn(file, tuple) ->
-            do_rm_rf(FN.join(path, file), tuple)
+            do_rm_rf(FN.join(path, file), format, tuple)
           end
 
         case res do
           { :ok, acc } ->
             case rmdir(path) do
-              :ok -> { :ok, [path|acc] }
+              :ok -> { :ok, [format.(path)|acc] }
               { :error, :enoent } -> res
               { :error, reason } -> { :error, reason, to_string(path) }
             end
           reason ->
             reason
         end
-      { :ok, :directory } -> do_rm_directory(path, entry)
-      { :ok, :regular } -> do_rm_regular(path, entry)
+      { :ok, :directory } -> do_rm_directory(path, format, entry)
+      { :ok, :regular } -> do_rm_regular(path, format, entry)
       { :error, reason } when reason in [:enoent, :enotdir] -> entry
       { :error, reason } -> { :error, reason, to_string(path) }
     end
   end
 
-  defp do_rm_rf(_, reason) do
+  defp do_rm_rf(_, _, reason) do
     reason
   end
 
-  defp do_rm_regular(path, { :ok, acc } = entry) do
+  defp do_rm_regular(path, format, { :ok, acc } = entry) do
     case rm(path) do
-      :ok -> { :ok, [path|acc] }
+      :ok -> { :ok, [format.(path)|acc] }
       { :error, :enoent } -> entry
       { :error, reason } -> { :error, reason, to_string(path) }
     end
@@ -761,10 +855,10 @@ defmodule File do
   # with rmdir/1. But on Unix, we remove them via rm/1. So we first try
   # to remove it as a directory and, if we get :enotdir, we fallback to
   # a file removal.
-  defp do_rm_directory(path, { :ok, acc } = entry) do
+  defp do_rm_directory(path, format, { :ok, acc } = entry) do
     case rmdir(path) do
-      :ok -> { :ok, [path|acc] }
-      { :error, :enotdir } -> do_rm_regular(path, entry)
+      :ok -> { :ok, [format.(path)|acc] }
+      { :error, :enotdir } -> do_rm_regular(path, format, entry)
       { :error, :enoent } -> entry
       { :error, reason } -> { :error, reason, to_string(path) }
     end
@@ -869,7 +963,12 @@ defmodule File do
   def open(path, modes // [])
 
   def open(path, modes) when is_list(modes) do
-    F.open(path, open_defaults(modes, true))
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.open(path, open_defaults(modes, true))
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   def open(path, function) when is_function(function) do
@@ -958,7 +1057,7 @@ defmodule File do
   @spec cwd!() :: Path.t
   def cwd!() do
     case F.get_cwd do
-      { :ok, cwd } -> to_string(cwd)
+      { :ok, cwd } -> String.from_char_list!(cwd)
       { :error, reason } ->
           raise File.Error, reason: reason, action: "get current working directory"
     end
@@ -970,7 +1069,12 @@ defmodule File do
   """
   @spec cd(Path.t) :: :ok | { :error, posix | :badarg | :no_translation }
   def cd(path) do
-    F.set_cwd(path)
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        F.set_cwd(path)
+      { :error, _reason} = error ->
+        error
+    end
   end
 
   @doc """
@@ -978,7 +1082,7 @@ defmodule File do
   """
   @spec cd!(Path.t) :: :ok
   def cd!(path) do
-    case F.set_cwd(path) do
+    case cd(path) do
       :ok -> :ok
       { :error, reason } ->
           raise File.Error, reason: reason, action: "set current working directory to", path: to_string(path)
@@ -1015,9 +1119,17 @@ defmodule File do
   @spec ls(Path.t) ::
     { :ok, [Path.t] } | { :error, posix | { :no_translation, :unicode.latin1_binary } }
   def ls(path // ".") do
-    case F.list_dir(path) do
-      { :ok, file_list } -> { :ok, Enum.map(file_list, &to_string(&1)) }
-      { :error, _ } = error -> error
+    case System.path_to_filename(path, :format) do
+      { :ok, path, format } ->
+        case F.list_dir(path) do
+          { :ok, file_list } ->
+            { :ok, Enum.map(file_list, format) }
+          { :error, _ } = error -> error
+        end
+      { :error, :no_translation } ->
+        { :error, { :no_translation, path } }
+      { :error, _reason } = error ->
+        error
     end
   end
 
@@ -1065,6 +1177,15 @@ defmodule File do
   @spec stream!(Path.t, [mode] | :line | non_neg_integer) :: Enumerable.t
   @spec stream!(Path.t, [mode], :line | non_neg_integer) :: Enumberable.t
   def stream!(path, modes // [], line_or_bytes // :line) do
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        do_stream!(path, modes, line_or_bytes)
+      { :error, reason } ->
+        raise File.Error, reason: reason, action: "stream", path: to_string(path)
+    end
+  end
+
+  defp do_stream!(path, modes, line_or_bytes) do
     modes = open_defaults(modes, true)
     bin   = nil? List.keyfind(modes, :encoding, 0)
 
@@ -1102,6 +1223,15 @@ defmodule File do
   @spec stream_to!(Enumerable.t, Path.t) :: Enumerable.t
   @spec stream_to!(Enumerable.t, Path.t, [mode]) :: Enumerable.t
   def stream_to!(stream, path, modes // []) do
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        do_stream_to!(stream, path, modes)
+      { :error, reason } ->
+        raise File.Error, reason: reason, action: "stream_to", path: to_string(path)
+    end
+  end
+
+  defp do_stream_to!(stream, path, modes) do
     modes = open_defaults([:write|List.delete(modes, :write)], true)
     bin   = nil? List.keyfind(modes, :encoding, 0)
 
@@ -1128,9 +1258,14 @@ defmodule File do
   def binstream!(file, mode // [], line_or_bytes // :line) do
     IO.write "File.binstream! is deprecated, simply use File.stream! instead\n" <>
              Exception.format_stacktrace
-    Stream.resource(fn -> open!(file, mode) end,
-                    &IO.do_binstream(&1, line_or_bytes),
-                    &F.close/1)
+    case System.path_to_filename(file) do
+      { :ok, file } ->
+        Stream.resource(fn -> open!(file, mode) end,
+                        &IO.do_binstream(&1, line_or_bytes),
+                        &F.close/1)
+      { :error, reason } ->
+        raise File.Error, reason: reason, action: "binstream!", path: to_string(file)
+    end
   end
 
   @doc """
@@ -1140,7 +1275,12 @@ defmodule File do
   """
   @spec chmod(Path.t, integer) :: :ok | { :error, posix | :badarg | :no_translation }
   def chmod(file, mode) do
-    F.change_mode(file, mode)
+    case System.path_to_filename(file) do
+      { :ok, file} ->
+        F.change_mode(file, mode)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -1162,7 +1302,12 @@ defmodule File do
   """
   @spec chgrp(Path.t, integer) :: :ok | { :error, posix | :badarg | :no_translation }
   def chgrp(file, gid) do
-    F.change_group(file, gid)
+    case System.path_to_filename(file) do
+      { :ok, file} ->
+        F.change_group(file, gid)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -1184,7 +1329,12 @@ defmodule File do
   """
   @spec chown(Path.t, integer) :: :ok | { :error, posix | :badarg | :no_translation }
   def chown(file, uid) do
-    F.change_owner(file, uid)
+    case System.path_to_filename(file) do
+      { :ok, file} ->
+        F.change_owner(file, uid)
+      { :error, _reason } = error ->
+        error
+    end
   end
 
   @doc """
@@ -1198,6 +1348,7 @@ defmodule File do
         raise File.Error, reason: reason, action: "change owner for", path: to_string(file)
     end
   end
+
 
   ## Helpers
 
@@ -1215,4 +1366,49 @@ defmodule File do
 
   defp open_defaults([], true),  do: [:binary]
   defp open_defaults([], false), do: []
+
+  defp copy_targets(source, destination) do
+    case copy_target(source) do
+      { :ok, source } ->
+        case copy_target(destination) do
+          { :ok, destination } ->
+            { :ok, { source, destination } }
+          { :error, _reason } = error ->
+            error
+        end
+      { :error, _reason } = error ->
+        error
+    end
+  end
+
+  defp copy_target(device) when is_pid(device) do
+    device
+  end
+
+  defp copy_target({ path, modes }) do
+    case System.path_to_filename(path) do
+      { :ok, path } ->
+        { :ok, { path, modes }}
+      { :error, _reason} = error ->
+        error
+    end
+  end
+
+  defp copy_target(path) do
+    System.path_to_filename(path)
+  end
+
+  defp cp_targets(source, destination) do
+    case System.path_to_filename(source, :format) do
+      { :ok, source, src_format } ->
+        case System.path_to_filename(destination, :format) do
+          { :ok, destination, dest_format } ->
+            { :ok, { source, destination }, { src_format, dest_format } }
+          { :error, reason } ->
+            { :error, reason, destination }
+        end
+      { :error, reason } ->
+        { :error, reason, source}
+    end
+  end
 end

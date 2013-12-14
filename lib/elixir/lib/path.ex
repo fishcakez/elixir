@@ -497,16 +497,23 @@ defmodule Path do
 
       Path.wildcard("projects/*/ebin/**/*.{beam,app}")
 
+  This function will use the native filename encoding for translating file and
+  directory names, see `System.native_filename_encoding/0`.
   """
-  @spec wildcard(char_list | binary) :: [Path.t]
+  @spec wildcard(Path.t) :: [Path.t]
   def wildcard(glob) when is_binary(glob) do
     paths = :filelib.wildcard binary_to_filename_string(glob)
-    encoding = :file.native_name_encoding()
+    encoding = System.native_filename_encoding()
     Enum.map paths, &flatten_filename_to_binary(&1, encoding)
   end
 
   def wildcard(glob) when is_list(glob) do
     :filelib.wildcard glob
+  end
+
+  def wildcard(glob) when is_atom(glob) do
+    atom_to_list(glob)
+    |> wildcard()
   end
 
   ## Helpers
@@ -524,7 +531,7 @@ defmodule Path do
   end
 
   defp filename_string_to_binary(list) do
-    flatten_filename_to_binary(:filename.flatten(list), :file.native_name_encoding())
+    flatten_filename_to_binary(:filename.flatten(list), System.native_filename_encoding())
   end
 
   defp flatten_filename_to_binary(list, encoding) do
