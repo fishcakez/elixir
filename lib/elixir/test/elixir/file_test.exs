@@ -43,6 +43,49 @@ defmodule FileTest do
       end
     end
 
+    test :cp_with_src_file_and_utf8_dest_file do
+      src = fixture_path("file.txt")
+      bin_dest = tmp_path(<<129 :: utf8, ".utf8.txt">>)
+      char_list_dest = String.to_char_list!(bin_dest)
+      atom_dest = list_to_atom(char_list_dest)
+
+      File.touch(bin_dest)
+
+      try do
+        assert File.exists?(char_list_dest)
+        assert File.exists?(atom_dest)
+        assert File.cp(src, bin_dest) == :ok
+        assert File.exists?(char_list_dest)
+        assert File.exists?(atom_dest)
+      after
+        File.rm(bin_dest)
+      end
+
+      File.touch(char_list_dest)
+
+      try do
+        assert File.exists?(bin_dest)
+        assert File.exists?(atom_dest)
+        assert File.cp(src, char_list_dest) == :ok
+        assert File.exists?(bin_dest)
+        assert File.exists?(atom_dest)
+      after
+        File.rm(char_list_dest)
+      end
+
+      File.touch(atom_dest)
+
+      try do
+        assert File.exists?(bin_dest)
+        assert File.exists?(char_list_dest)
+        assert File.cp(src, atom_dest) == :ok
+        assert File.exists?(bin_dest)
+        assert File.exists?(char_list_dest)
+      after
+        File.rm(atom_dest)
+      end
+    end
+
     test :cp_with_src_file_and_dest_dir do
       src   = fixture_path("file.txt")
       dest  = tmp_path("tmp")
