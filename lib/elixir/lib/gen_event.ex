@@ -585,8 +585,8 @@ defmodule GenEvent do
         {hib, handlers} = server_event(:ack, event, handlers, name)
         loop(parent, name, handlers, debug, hib)
       {_from, tag, {:sync_notify, event}} ->
-        {hib, handlers} = server_event(:sync, event, handlers, name)
-        reply(tag, :ok)
+        {reply, hib, handlers} = server_sync_event(event, tag, handlers, name)
+        _ = if reply, do: reply(tag, :ok)
         loop(parent, name, handlers, debug, hib)
       {:DOWN, ref, :process, _pid, reason} = other ->
         case handle_down(ref, reason, handlers, name) do
@@ -790,6 +790,13 @@ defmodule GenEvent do
     {hib, server_collect_process_handlers(mode, event, streams, handlers, name)}
   end
 
+  defp server_sync_event(event, tag, handlers, name) do
+    {handlers, streams} = server_split_process_handlers(:sync, event, handlers, [], [])
+    {reply, hib, handlers} = server_sync_notify(event, tag, :handle_sync_event, :handle_event,
+                                                handlers, name, handlers, [], false, true)
+    {reply, hib, server_collect_process_handlers(:sync, event, streams, handlers, name)}
+  end
+
   defp server_split_process_handlers(mode, event, [handler|t], handlers, streams) do
     case handler(handler, :id) do
       {pid, _ref} when is_pid(pid) ->
@@ -823,6 +830,60 @@ defmodule GenEvent do
 
   defp server_notify(_, _, [], _, _, acc, hib) do
     {hib, acc}
+  end
+
+  defp server_sync_notify(event, tag, fun1, fun2, [handler|t], name, handlers, acc, hib, reply) do
+    case server_sync_update(handler, fun1, fun2, event, tag, name, handlers) do
+      {new_reply, new_hib, handler} ->
+        server_sync_notify(event, tag, fun1, fun2, t, name, handlers, [handler|acc], hib or new_hib, reply and new_reply)
+      :error ->
+        server_sync_notify(event, tag, fun2, fun2, t, name, handlers, acc, hib, reply)
+    end
+  end
+
+  defp server_sync_notify(_, _, _, _, [], _, _, acc, hib, reply) do
+    {reply, hib, acc}
+  end
+
+  defp server_sync_update(handler, fun1, fun2, event, tag, name, handlers) do
+    handler(module: module) = handler
+
+    if function_exported?(module, fun1, 3) do
+      do_server_sync_update(handler, fun1, event, tag, name)
+    else
+      case server_update(handler, fun2, event, name, handlers) do
+        {hib, handler} -> {true, hib, handler}
+        :error         -> :error
+      end
+    end
+  end
+
+  def do_server_sync_update(handler, fun, event, tag, name) do
+    handler(module: module, state: state) = handler
+
+    case do_handler(module, fun, [event, tag, state]) do
+      {:ok, res} ->
+        case res do
+          {:ok, state} ->
+            {true, false, handler(handler, state: state)}
+          {:ok, state, :hibernate} ->
+            {true, true, handler(handler, state: state)}
+          {:noreply, state} ->
+            {false, false, handler(handler, state: state)}
+          {:noreply, state, :hibernate} ->
+            {false, true, handler(handler, state: state)}
+          :remove_handler ->
+            do_terminate(handler, :remove_handler, event, name, :normal)
+            :error
+          other ->
+            reason = {:bad_return_value, other}
+            do_terminate(handler, {:error, reason}, event, name, reason)
+            :error
+        end
+      {:error, reason} ->
+        do_terminate(handler, {:error, reason}, event, name, reason)
+        :error
+    end
   end
 
   defp server_update(handler, fun, event, name, _handlers) do
