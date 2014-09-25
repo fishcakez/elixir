@@ -4,6 +4,7 @@ defmodule Logger.Config do
   use GenEvent
 
   @name __MODULE__
+  @table __MODULE__
   @data :__data__
 
   def start_link do
@@ -44,22 +45,30 @@ defmodule Logger.Config do
   def translate_backend(other),    do: other
 
   def __data__() do
-    if data = Application.get_env(:logger, @data) do
-      data
-    else
-      raise "Cannot use Logger, the :logger application is not running"
+    try do
+      :ets.lookup_element(@table, @data, 2)
+    catch
+      ArgumentError ->
+        raise "Cannot use Logger, the :logger application is not running"
     end
   end
 
+  def new_data() do
+    opts = [:named_table, :set, :public, {:read_concurrency, true}]
+    @table = :ets.new(@table, opts)
+    :true = :ets.insert_new(@table, {@data, nil})
+    :ok
+  end
+
   def clear_data() do
-    Application.delete_env(:logger, @data)
+    :ets.delete(@table)
   end
 
   ## Callbacks
 
   def init(_) do
     # Use previous data if available in case this handler crashed.
-    state = Application.get_env(:logger, @data) || compute_state(:async)
+    state = :ets.lookup_element(@table, @data, 2) || compute_state(:async)
     {:ok, state}
   end
 
@@ -86,7 +95,7 @@ defmodule Logger.Config do
 
   def handle_call({:configure, options}, state) do
     Enum.each options, fn {key, value} ->
-      Application.put_env(:logger, key, value)
+      Application.put_env(:logger, key, value, persistent: true)
     end
     {:ok, :ok, compute_state(state.mode)}
   end
@@ -128,12 +137,12 @@ defmodule Logger.Config do
 
   defp update_backends(fun) do
     backends = fun.(Application.get_env(:logger, :backends, []))
-    Application.put_env(:logger, :backends, backends)
+    Application.put_env(:logger, :backends, backends, persistent: true)
   end
 
   defp update_translators(%{translators: translators} = state, fun) do
     translators = fun.(translators)
-    Application.put_env(:logger, :translators, translators)
+    Application.put_env(:logger, :translators, translators, persistent: true)
     persist %{state | translators: translators}
   end
 
@@ -159,7 +168,7 @@ defmodule Logger.Config do
   end
 
   defp persist(state) do
-    Application.put_env(:logger, @data, state)
+    :ets.update_element(@table, @data, {2, state})
     state
   end
 end

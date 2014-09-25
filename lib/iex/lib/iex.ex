@@ -274,7 +274,7 @@ defmodule IEx do
   """
   def configure(options) do
     Enum.each options, fn {k, v} ->
-      Application.put_env(:iex, k, configure(k, v))
+      Application.put_env(:iex, k, configure(k, v), persistent: true)
     end
   end
 
@@ -305,7 +305,7 @@ defmodule IEx do
   Registers a function to be invoked after the IEx process is spawned.
   """
   def after_spawn(fun) when is_function(fun) do
-    Application.put_env(:iex, :after_spawn, [fun|after_spawn])
+    Application.put_env(:iex, :after_spawn, [fun|after_spawn], persistent: true)
   end
 
   @doc """
@@ -467,7 +467,7 @@ defmodule IEx do
   defp start_iex() do
     unless started? do
       {:ok, _} = Application.ensure_all_started(:iex)
-      Application.put_env(:iex, :started, true)
+      Application.put_env(:iex, :started, true, persistent: true)
     end
 
     :ok

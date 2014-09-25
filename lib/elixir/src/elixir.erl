@@ -42,6 +42,14 @@ start(_Type, _Args) ->
       ok
   end,
 
+  %% If ansi_enabled has been set make sure it is not overridden on reload.
+  case application:get_env(elixir, ansi_enabled) of
+    {ok, ANSI} ->
+      application:set_env(elixir, ansi_enabled, ANSI, [{persistent, true}]);
+    undefined ->
+      ok
+  end,
+
   elixir_sup:start_link().
 
 stop(_S) ->

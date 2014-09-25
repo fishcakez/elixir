@@ -7,6 +7,8 @@ defmodule Logger.App do
   def start(_type, _args) do
     import Supervisor.Spec
 
+    Logger.Config.new_data()
+
     otp_reports?  = Application.get_env(:logger, :handle_otp_reports)
     sasl_reports? = Application.get_env(:logger, :handle_sasl_reports)
     threshold     = Application.get_env(:logger, :discard_threshold_for_error_logger)
@@ -37,9 +39,7 @@ defmodule Logger.App do
     Application.get_env(:logger, :deleted_handlers)
     |> Enum.each(&:error_logger.add_report_handler/1)
 
-    # We need to do this in another process as the Application
-    # Controller is currently blocked shutting down this app.
-    spawn_link(fn -> Logger.Config.clear_data end)
+    Logger.Config.clear_data()
 
     :ok
   end
@@ -49,13 +49,13 @@ defmodule Logger.App do
   """
   def stop() do
     set = Application.get_env(:logger, :deleted_handlers)
-    Application.put_env(:logger, :deleted_handlers, HashSet.new)
+    Application.put_env(:logger, :deleted_handlers, HashSet.new, persistent: true)
     _ = Application.stop(:logger)
     Enum.each(set, &:error_logger.add_report_handler/1)
   end
 
   defp store_deleted_handlers(list) do
-    Application.put_env(:logger, :deleted_handlers, Enum.into(list, HashSet.new))
+    Application.put_env(:logger, :deleted_handlers, Enum.into(list, HashSet.new), persistent: true)
   end
 
   defp delete_error_logger_handler(should_delete?, handler, deleted) do

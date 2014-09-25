@@ -32,7 +32,7 @@ defmodule Logger.Backends.Console do
   defp configure(options) do
     env = Application.get_env(:logger, :console, [])
     console = configure_merge(env, options)
-    Application.put_env(:logger, :console, console)
+    Application.put_env(:logger, :console, console, persistent: true)
 
     format = console
       |> Keyword.get(:format)
