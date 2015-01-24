@@ -1,5 +1,4 @@
 :ok = Application.start(:iex)
-IEx.configure([colors: [enabled: false]])
 ExUnit.start [trace: "--trace" in System.argv]
 
 defmodule IEx.Case do
@@ -35,9 +34,11 @@ defmodule IEx.Case do
   setup do
     opts = Application.get_all_env(:iex)
            |> Keyword.take(@iex_app_env)
+    Enum.each @iex_app_env, fn k -> Application.delete_env(:iex, k) end
+    Application.put_env(:iex, :colors, [enabled: false])
     on_exit fn ->
       Enum.each @iex_app_env, fn k -> Application.delete_env(:iex, k) end
-      IEx.configure(opts)
+      Enum.each opts, fn({k, v}) -> Application.put_env(:iex, k, v) end
     end
     :ok
   end
