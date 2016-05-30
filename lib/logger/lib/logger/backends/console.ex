@@ -47,9 +47,14 @@ defmodule Logger.Backends.Console do
     end
   end
 
-  def handle_info({:io_reply, ref, _}, %{ref: ref} = state) do
+  def handle_info({:io_reply, ref, :ok}, %{ref: ref} = state) do
     {:ok, flush_buffer(%{state | ref: nil})}
   end
+
+  def handle_info({:io_reply, ref, {:error, error}}, %{ref: ref} = state) do
+    {:ok, handle_error(error, %{state | ref: nil})}
+  end
+
   def handle_info(_, state) do
     {:ok, state}
   end
@@ -159,5 +164,20 @@ defmodule Logger.Backends.Console do
     msg = "#{inspect __MODULE__} dropped #{inspect dropped} events as it " <>
           "exceeded the max buffer size of #{inspect max_buffer} messages"
     color_event(msg, :error, colors)
+  end
+
+  defp handle_error({:put_chars, :unicode, data} = error, state) do
+    %{device: device} = state
+    case :unicode.characters_to_binary(data) do
+      {_, good, bad} ->
+        unicode_data = [good | Logger.Formatter.prune(bad)]
+        %{state | ref: io_request(device, unicode_data)}
+      _ ->
+        raise "unexpected io error: #{inspect error}"
+    end
+  end
+
+  defp handle_error(other, _) do
+    raise "unexpected io error: #{inspect other}"
   end
 end
