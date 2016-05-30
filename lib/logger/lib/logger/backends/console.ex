@@ -3,10 +3,6 @@ defmodule Logger.Backends.Console do
 
   use GenEvent
 
-  def flush(handler) do
-    GenEvent.call(Logger, handler, :flush)
-  end
-
   def init(:console) do
     if Process.whereis(:user) do
       init({:user, []})
@@ -23,36 +19,43 @@ defmodule Logger.Backends.Console do
     {:ok, :ok, configure(state.device, options)}
   end
 
-  def handle_call(:flush, state) do
-    {:ok, :ok, flush_buffer(state)}
-  end
-
   def handle_event({_level, gl, _event}, state)
   when node(gl) != node() do
     {:ok, state}
   end
 
   def handle_event({level, _gl, {Logger, msg, ts, md}}, state) do
-    %{level: log_level, ref: ref, batch_size: batch_size,
+    %{level: log_level, ref: ref, buffer_size: buffer_size,
       max_buffer: max_buffer} = state
     cond do
       not meet_level?(level, log_level) ->
         {:ok, state}
       is_nil(ref) ->
         {:ok, log_event(level, msg, ts, md, state)}
-      batch_size < max_buffer ->
+      buffer_size < max_buffer ->
         {:ok, buffer_event(level, msg, ts, md, state)}
-      true ->
-        {:ok, %{state | batch_size: batch_size + 1}}
+      buffer_size === max_buffer ->
+        state = buffer_event(level, msg, ts, md, state)
+        {:ok, await_and_log(state)}
     end
   end
 
+  def handle_event(:flush, state) do
+    {:ok, flush(state)}
+  end
+
   def handle_info({:io_reply, ref, :ok}, %{ref: ref} = state) do
-    {:ok, flush_buffer(%{state | ref: nil})}
+    Process.demonitor(ref, [:flush])
+    {:ok, log_buffer(%{state | ref: nil, last_ts: nil})}
   end
 
   def handle_info({:io_reply, ref, {:error, error}}, %{ref: ref} = state) do
+    Process.demonitor(ref, [:flush])
     {:ok, handle_error(error, %{state | ref: nil})}
+  end
+
+  def handle_info({:DOWN, ref, _, pid, reason}, %{ref: ref}) do
+    raise "device #{inspect pid} exited: " <> Exception.format_exit(reason)
   end
 
   def handle_info(_, state) do
@@ -83,7 +86,7 @@ defmodule Logger.Backends.Console do
     max_buffer = Keyword.get(config, :max_buffer, 32)
     %{format: format, metadata: Enum.reverse(metadata),
       level: level, colors: colors, device: device, max_buffer: max_buffer,
-      batch_size: 0, buffer: [], ref: nil}
+      buffer_size: 0, buffer_ts: nil, buffer: [], ref: nil, last_ts: nil}
   end
 
   defp configure_merge(env, options) do
@@ -102,31 +105,44 @@ defmodule Logger.Backends.Console do
       enabled: Keyword.get(colors, :enabled, IO.ANSI.enabled?)}
   end
 
-  defp log_event(level, msg, ts, md, state) do
-    %{colors: colors, device: device} = state
-    output =
-      format_event(level, msg, ts, md, state)
-      |> color_event(level, colors)
-    %{state | ref: io_request(device, output)}
-  end
-
-  defp io_request(device, output) do
-    ref = make_ref
-    send(device, {:io_request, self(), ref, {:put_chars, :unicode, output}})
-    ref
+  defp log_event(level, msg, ts, md, %{device: device} = state) do
+    output = format_event(level, msg, ts, md, state)
+    %{state | ref: async_io(device, output), last_ts: ts}
   end
 
   defp buffer_event(level, msg, ts, md, state) do
-    %{colors: colors, buffer: buffer, batch_size: batch_size} = state
-    output =
-      format_event(level, msg, ts, md, state)
-      |> color_event(level, colors)
-    buffer = [buffer | output]
-    %{state | buffer: buffer, batch_size: batch_size + 1}
+    %{buffer: buffer, buffer_size: buffer_size} = state
+    buffer = [buffer | format_event(level, msg, ts, md, state)]
+    %{state | buffer: buffer, buffer_size: buffer_size + 1, buffer_ts: ts}
   end
 
-  defp format_event(level, msg, ts, md, %{format: format, metadata: keys}) do
-    Logger.Formatter.format(format, level, msg, ts, take_metadata(md, keys))
+  defp async_io(device, output) do
+    pid = GenServer.whereis(device)
+    ref = Process.monitor(pid)
+    send(pid, {:io_request, self(), ref, {:put_chars, :unicode, output}})
+    ref
+  end
+
+  defp await_io(%{ref: nil} = state), do: state
+
+  defp await_io(%{ref: ref} = state) do
+    receive do
+      {:io_reply, ^ref, :ok} ->
+        Process.demonitor(ref, [:flush])
+        %{state | ref: nil, last_ts: nil}
+      {:io_reply, ^ref, {:error, error}} ->
+        Process.demonitor(ref, [:flush])
+        await_io(handle_error(error, %{state | ref: nil}))
+      {:DOWN, ^ref, _, pid, reason} ->
+        raise "device #{inspect pid} exited: " <> Exception.format_exit(reason)
+    end
+  end
+
+  defp format_event(level, msg, ts, md, state) do
+    %{format: format, metadata: keys, colors: colors} = state
+    format
+    |> Logger.Formatter.format(level, msg, ts, take_metadata(md, keys))
+    |> color_event(level, colors)
   end
 
   defp take_metadata(metadata, keys) do
@@ -144,26 +160,17 @@ defmodule Logger.Backends.Console do
     [IO.ANSI.format_fragment(Map.fetch!(colors, level), true), data | IO.ANSI.reset]
   end
 
-  defp flush_buffer(%{batch_size: 0} = state) do
-    state
+  defp log_buffer(%{buffer_size: 0, buffer: []} = state), do: state
+
+  defp log_buffer(state) do
+    %{device: device, buffer: buffer, buffer_ts: buffer_ts} = state
+    %{state | ref: async_io(device, buffer), buffer: [], buffer_size: 0,
+      buffer_ts: nil, last_ts: buffer_ts}
   end
 
-  defp flush_buffer(%{device: device, buffer: buffer} = state) do
-    next_ref = io_request(device, [buffer | dropping(state)])
-    %{state | ref: next_ref, buffer: [], batch_size: 0}
-  end
-
-  defp dropping(%{batch_size: batch_size, max_buffer: max_buffer})
-  when batch_size <= max_buffer do
-    []
-  end
-
-  defp dropping(state) do
-    %{batch_size: batch_size, max_buffer: max_buffer, colors: colors} = state
-    dropped = batch_size - max_buffer
-    msg = "#{inspect __MODULE__} dropped #{inspect dropped} events as it " <>
-          "exceeded the max buffer size of #{inspect max_buffer} messages"
-    color_event(msg, :error, colors)
+  defp handle_error(error, %{last_ts: :error}) do
+    raise "failure while logging console messages: " <>
+      inspect(error, width: :infinity)
   end
 
   defp handle_error({:put_chars, :unicode, data} = error, state) do
@@ -171,13 +178,33 @@ defmodule Logger.Backends.Console do
     case :unicode.characters_to_binary(data) do
       {_, good, bad} ->
         unicode_data = [good | Logger.Formatter.prune(bad)]
-        %{state | ref: io_request(device, unicode_data)}
+        %{state | ref: async_io(device, unicode_data)}
       _ ->
-        raise "unexpected io error: #{inspect error}"
+        # A well behaved IO device should not error on good data
+        io_error(error, state)
     end
   end
 
-  defp handle_error(other, _) do
-    raise "unexpected io error: #{inspect other}"
+  defp handle_error(error, state) do
+    io_error(error, state)
+  end
+
+  defp io_error(error, %{last_ts: last_ts} = state) do
+    msg = ["Failure while logging console messages: " |
+      inspect(error, width: :infinity)]
+    log_event(:error, msg, last_ts, [], %{state | last_ts: :error})
+  end
+
+  defp await_and_log(state) do
+    state
+    |> await_io()
+    |> log_buffer()
+  end
+
+  defp flush(state) do
+    state
+    |> await_io()
+    |> log_buffer()
+    |> await_io()
   end
 end

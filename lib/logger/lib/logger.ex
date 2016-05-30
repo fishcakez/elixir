@@ -397,12 +397,7 @@ defmodule Logger do
   @spec flush :: :ok
   def flush do
     _ = GenEvent.which_handlers(:error_logger)
-    handlers = GenEvent.which_handlers(Logger)
-    _ = for {Logger.Backends.Console, _} = handler <- handlers do
-      Logger.Backends.Console.flush(handler)
-    end
-    Logger.Backends.Console.flush(Logger.Backends.Console)
-    :ok
+    GenEvent.sync_notify(Logger, :flush)
   end
 
   @doc """
