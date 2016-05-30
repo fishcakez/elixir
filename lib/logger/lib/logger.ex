@@ -183,6 +183,8 @@ defmodule Logger do
 
     * `:colors` - a keyword list of coloring options.
 
+    * `:max_buffer` - maximum events to buffer before dropping (default: 32)
+
   In addition to the keys provided by the user via `Logger.metadata/1`,
   the following default keys are available in the `:metadata` list:
 
@@ -395,7 +397,11 @@ defmodule Logger do
   @spec flush :: :ok
   def flush do
     _ = GenEvent.which_handlers(:error_logger)
-    _ = GenEvent.which_handlers(Logger)
+    handlers = GenEvent.which_handlers(Logger)
+    _ = for {Logger.Backends.Console, _} = handler <- handlers do
+      Logger.Backends.Console.flush(handler)
+    end
+    Logger.Backends.Console.flush(Logger.Backends.Console)
     :ok
   end
 
