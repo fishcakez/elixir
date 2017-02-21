@@ -112,10 +112,17 @@ defmodule Base do
     end
   end
 
+  for {encoding1, value1} <- b64_alphabet, {encoding2, value2} <- b64_alphabet do
+    encoding = (encoding1 <<< 8) + encoding2
+    value    = (value1 <<< 6) + value2
+    defp pair_enc64(unquote(value)), do: unquote(encoding)
+  end
+
   @compile {:inline, from_upper: 1, from_lower: 1, from_mixed: 1,
                      to_lower: 1, to_upper: 1, enc16: 1, dec16: 1,
                      enc32: 1, dec32: 1, enc32hex: 1, dec32hex: 1,
-                     enc64: 1, dec64: 1, enc64url: 1, dec64url: 1}
+                     enc64: 1, dec64: 1, enc64url: 1, dec64url: 1,
+                     pair_enc64: 1}
 
   defp to_lower(char) when char in ?A..?Z,
     do: char + (?a - ?A)
@@ -278,6 +285,13 @@ defmodule Base do
   def encode64(data, opts \\ []) when is_binary(data) do
     pad? = Keyword.get(opts, :padding, true)
     do_encode64(data, pad?)
+  end
+
+  @spec pair_encode64(binary) :: binary
+  @spec pair_encode64(binary, Keyword.t) :: binary
+  def pair_encode64(data, opts \\ []) when is_binary(data) do
+    pad? = Keyword.get(opts, :padding, true)
+    do_pair_encode64(data, pad?)
   end
 
   @doc """
@@ -741,6 +755,24 @@ defmodule Base do
     end
     main <> maybe_pad(tail, pad?, 4, "=")
   end
+
+  defp do_pair_encode64(<<>>, _), do: <<>>
+  defp do_pair_encode64(data, pad?) do
+    split =  3 * div(byte_size(data), 3)
+    <<main::size(split)-binary, rest::binary>> = data
+    main = for <<c::12 <- main>>, into: <<>>, do: <<pair_enc64(c)::16>>
+    tail = case rest do
+      <<c1::6, c2::6, c3::4>> ->
+        <<enc64(c1)::8, enc64(c2)::8, enc64(bsl(c3, 2))::8>>
+      <<c1::6, c2::2>> ->
+        <<enc64(c1)::8, enc64(bsl(c2, 4))::8>>
+      <<>> ->
+        <<>>
+    end
+    main <> maybe_pad(tail, pad?, 4, "=")
+  end
+
+
 
   defp do_decode64(<<>>, _), do: <<>>
   defp do_decode64(string, false) do
